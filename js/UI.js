@@ -22,6 +22,25 @@ var UI = (function(){
     \********/
 
     $(function(){
+        //try to load custom configuration
+        //when done (wether it succeeds or fails) init the page
+        $.getScript( "config.js" ).done(init).fail(init);
+    });
+
+    /**
+     * one time setup function
+     */
+    function init(){
+        //load theme if it exsists
+        if(CONFIG.theme){
+            CONFIG.theme.forEach(function(theme_file){
+                $('<link>')
+                    .appendTo('head')
+                    .attr({type : 'text/css', rel : 'stylesheet'})
+                    .attr('href', theme_file);
+            });
+        }
+
         overrideMpd();
 
         setupInstances();
@@ -30,6 +49,7 @@ var UI = (function(){
             var client = MPD(client_config.port, client_config.hostname);
 
             client.name = client_config.name;
+            client.idx = idx;
 
             client.on('StateChanged',updateState);
 
@@ -41,19 +61,9 @@ var UI = (function(){
 
             client.on('DataLoaded', updateFiles);
 
-            client.on('Connect',function(){
-                var element = $('[data-instance_idx='+idx+'] .INSTANCE_connection_status');
-                element.html('Connected!');
-                element.addClass('good');
-                $('.MPD_disconnected').css({display:'none'});
-            });
+            client.on('Connect', onConnect);
 
-            client.on('Disconnect',function(){
-                var element = $('[data-instance_idx='+idx+'] .INSTANCE_connection_status');
-                element.html('Not Connected!');
-                element.addClass('bad');
-                $('.MPD_disconnected').css({display:''});
-            });
+            client.on('Disconnect', onDisconnect);
 
             UI.clients.push(client);
         });
@@ -71,7 +81,7 @@ var UI = (function(){
 
         //setup event handlers for marque elements
         setupMarque();
-    });
+    }
 
     /*******************\
     |* private methods *|
@@ -228,6 +238,9 @@ var UI = (function(){
 
         CONFIG.clients.forEach(function(client_config, idx){
             var contents = $($('#template_INSTANCE').html());
+            if(idx === 0){
+                contents.addClass('selected');
+            }
             contents.attr('data-instance_idx', idx);
             contents.find('.INSTANCE_name').html(client_config.name);
             contents.find('.INSTANCE_port').html(client_config.port);
@@ -235,8 +248,11 @@ var UI = (function(){
                 contents.find('.INSTANCE_host').html(client_config.hostname);
             }
             else{
-                contents.find('.INSTANCE_host').remove();
+                contents.find('.INSTANCE_host').closest('tr').remove();
             }
+            var connection_element = contents.find('.INSTANCE_connection_status');
+            connection_element.html('Not Connected!');
+            connection_element.addClass('bad');
             $('.MPD_instances').append(contents);
         });
     }
@@ -378,33 +394,60 @@ var UI = (function(){
     /**
      * setup the file browser
      */
-    function updateFiles(){
-        setTimeout(function(){
-            var element = $('.MPD_file_placeholder');
-            if(element.length){
-                //manually make the file root if it does not exsist
-                var contents = $($('#template_LIST_directory').html());
-                element.replaceWith(contents);
-            }
-            else{
-                //empty out anexsisting root
-                $('[data-tab_page=files] .LIST_directory .MPD_directory_children').empty();
-            }
+    function updateFiles(state,client){
+        if(client != getClient()){
+            return;
+        }
+        var element = $('.MPD_file_placeholder');
+        if(element.length){
+            //manually make the file root if it does not exsist
+            var contents = $($('#template_LIST_directory').html());
+            element.replaceWith(contents);
+        }
+        else{
+            //empty out anexsisting root
+            $('[data-tab_page=files] .LIST_directory .MPD_directory_children').empty();
+        }
 
-            //populate the file root
-            var root = $('[data-tab_page=files] .LIST_directory');
-            if(UI.last_clicked_file_element === null){
-                UI.last_clicked_file_element = root;
-            }
-            populateFileList(root);
-            //the root is treated differently than the rest of the oflders
-            //you can't close it and it shouldn't have the common tools
-            //because 'add all music' is a sort of dangerous button on root
-            root.addClass('expanded root');
-            root.find('.LIST_directory_path').html('Music Files');
-            root.find('.MPD_button').remove();
-            resetSearch(null, true);
-        }, 100);
+        //populate the file root
+        var root = $('[data-tab_page=files] .LIST_directory');
+        if(UI.last_clicked_file_element === null){
+            UI.last_clicked_file_element = root;
+        }
+        populateFileList(root);
+        //the root is treated differently than the rest of the oflders
+        //you can't close it and it shouldn't have the common tools
+        //because 'add all music' is a sort of dangerous button on root
+        root.addClass('expanded root');
+        root.find('.LIST_directory_path').html('Music Files');
+        root.find('.MPD_button').remove();
+        resetSearch(null, true);
+    }
+
+    /**
+     * called when a client (re)connects
+     */
+    function onConnect(connect_event, client){
+        var element = $('[data-instance_idx='+client.idx+'] .INSTANCE_connection_status');
+        element.html('Connected!');
+        element.addClass('good');
+        element.removeClass('bad');
+        if(client == getClient()){
+            $('.MPD_disconnected').css({display:'none'});
+        }
+    }
+
+    /**
+     * called when a client disconnects
+     */
+    function onDisconnect(disconnect_event, client){
+        var element = $('[data-instance_idx='+client.idx+'] .INSTANCE_connection_status');
+        element.html('Not Connected!');
+        element.addClass('bad');
+        element.removeClass('good');
+        if(client == getClient()){
+            $('.MPD_disconnected').css({display:''});
+        }
     }
 
     /**
@@ -628,27 +671,31 @@ var UI = (function(){
         if(idx === UI.active_client){
             return;
         }
-        if(UI.clients[idx].isConnected()){
-            UI.active_client = idx;
-            var client = getClient();
+        UI.active_client = idx;
+        var client = getClient();
 
-            //Reset current song data. It's stange to keep the data if
-            //the new instance don't have a curent song
-            $('.MPD_controller_current_song_title').empty();
-            $('.MPD_controller_current_song_artist').empty();
-            $('.MPD_controller_current_song_album').empty();
-            $('.MPD_controller_current_song_time').empty();
-            $('.MPD_controller_current_song_duration').empty();
-            $('input.MPD_seek').prop('max',100);
-            $('input.MPD_seek').val(0);
+        //Reset current song data. It's stange to keep the data if
+        //the new instance don't have a curent song
+        $('.MPD_controller_current_song_title').empty();
+        $('.MPD_controller_current_song_artist').empty();
+        $('.MPD_controller_current_song_album').empty();
+        $('.MPD_controller_current_song_time').empty();
+        $('.MPD_controller_current_song_duration').empty();
+        $('input.MPD_seek').prop('max',100);
+        $('input.MPD_seek').val(0);
 
+        //update the UI
+        $('.INSTANCE_instance').removeClass('selected');
+        $('[data-instance_idx='+idx+'].INSTANCE_instance').addClass('selected');
+        if(client.isConnected()){
             updateState(client.getState(), client);
             updateQueue(client.getQueue(), client);
             updatePlaylists(client.getPlaylists(), client);
             updateOutputs(client.getOutputs(), client);
+            $('.MPD_disconnected').css({display:'none'});
         }
         else{
-            alert("Error: cannot switch to a disconnected client");
+            $('.MPD_disconnected').css({display:''});
         }
     }
 
